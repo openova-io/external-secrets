@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2024-04-01
-**Updated:** 2026-01-16
+**Updated:** 2026-01-17
 
 ## Context
 
@@ -11,6 +11,7 @@ Need secure secrets management that:
 - Works across multiple regions
 - Supports auto-generation of complex secrets
 - Is fully declarative and GitOps-compatible
+- Manages Gitea access tokens for Flux
 
 ## Decision
 
@@ -69,6 +70,7 @@ sequenceDiagram
     participant V2 as Vault R2
 
     Op->>Wiz: Enter initial credentials
+    Note over Op,Wiz: Cloud API token, DNS token, Gitea admin
     Wiz->>K8s: Create K8s Secrets
     K8s->>K8s: ESO PushSecret triggers
     K8s->>V1: Push secrets
@@ -90,6 +92,64 @@ sequenceDiagram
     KS->>PS: Trigger PushSecret
     PS->>V1: Push secret
     PS->>V2: Push secret
+```
+
+## Gitea Token Management
+
+Gitea access tokens for Flux are managed via ESO:
+
+### Bootstrap Creates Gitea Token
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitea-token
+  namespace: flux-system
+type: Opaque
+data:
+  username: Zm... # base64 encoded username
+  password: Z2l... # base64 encoded Gitea access token
+```
+
+### PushSecret Syncs to Vault
+
+```yaml
+apiVersion: external-secrets.io/v1alpha1
+kind: PushSecret
+metadata:
+  name: push-gitea-token
+  namespace: flux-system
+spec:
+  refreshInterval: 1h
+  secretStoreRefs:
+    - name: vault-region1
+      kind: ClusterSecretStore
+    - name: vault-region2
+      kind: ClusterSecretStore
+  selector:
+    secret:
+      name: gitea-token
+  data:
+    - match:
+        secretKey: password
+        remoteRef:
+          remoteKey: flux/gitea-token
+          property: password
+```
+
+### Flux Uses Token
+
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: component
+  namespace: flux-system
+spec:
+  url: https://gitea.<domain>/<org>/component.git
+  secretRef:
+    name: gitea-token  # ESO-managed
 ```
 
 ## Configuration
@@ -223,6 +283,16 @@ spec:
 4. **Wizard displays Vault unseal keys** (save offline!)
 5. **No secrets ever written to files or Git**
 
+## Managed Secrets
+
+| Secret | Purpose | Created By |
+|--------|---------|------------|
+| `gitea-token` | Flux access to Gitea | Bootstrap |
+| `cloudflare-credentials` | ExternalDNS | Bootstrap |
+| `hetzner-credentials` | Cloud provider | Bootstrap |
+| `vault-unseal-keys` | Vault auto-unseal | Displayed once |
+| `db-credentials` | Database passwords | ESO Generator |
+
 ## Generator Types
 
 | Generator | Use Case |
@@ -240,6 +310,7 @@ spec:
 - Auto-generation of complex secrets
 - Multi-region sync via single PushSecret
 - Backend-agnostic (swap without app changes)
+- Gitea tokens managed consistently with all other secrets
 
 **Negative:**
 - Requires bootstrap for initial secrets
@@ -259,4 +330,6 @@ If migrating from SOPS-based setup:
 ## Related
 
 - [ADR-VAULT](../../vault/docs/ADR-VAULT.md)
+- [ADR-GITEA](../../gitea/docs/ADR-GITEA.md)
+- [ADR-FLUX-GITOPS](../../flux/docs/ADR-FLUX-GITOPS.md)
 - [SPEC-SECRETS-CONFIGURATION](./SPEC-SECRETS-CONFIGURATION.md)
